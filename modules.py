@@ -103,7 +103,7 @@ class SolutionOfPDENet(nn.Module):
                  latent_dim: int,
                  stab_term: float = 0.0,
                  newton_kwaargs: Optional[dict] = None,
-                 init_kwaargs: Optional[dict] = {'max_iter': 100, 'n_batch': 10}) -> None:
+                 init_kwaargs: Optional[dict] = {'max_iter': 100, 'n_batch1': 5, 'n_batch2': 20}) -> None:
         """
         Batched (with a loop) operation of the solution `N(u, u_x, u_{xx} ; z) = 0`, i.e. batched `S o N`
 
@@ -122,16 +122,22 @@ class SolutionOfPDENet(nn.Module):
         self.get_N = get_N
         self._init_N(**init_kwaargs)
 
-    def _init_N(self, max_iter, n_batch):
+    def _init_N(self, max_iter, n_batch1, n_batch2):
         success = False
         for i in range(max_iter):
             self.N = self.get_N()
-            if self._is_good_N(n_batch):
-                success = True
-                break
+            if self._is_good_N(n_batch1):
+                # final check
+                print(f'Found good one, Starting Second Check')
+                if self._is_good_N(n_batch2):
+                    success = True
+                    print(f'Success!')
+                    break
+                print('Failed second check. Continuing First check.')
 
             if max_iter < 10 or i % (max_iter // 10) == 0:
                 print(f'Failed to find a good N initialization after {i+1}/{max_iter} iterations. Trying again.')
+
 
         if not success:
             raise ValueError(f'Could not find a good N after {max_iter} iterations.')
@@ -141,18 +147,11 @@ class SolutionOfPDENet(nn.Module):
         z = torch.randn(n_batch, self.latent_dim)
 
         u_solve_batch = torch.zeros(n_batch, len(self.x)-2)
-        with torch.no_grad():
-            u_solve_batch = self.forward(u_solve_batch, z)
 
-        # check if any are nan
-        if torch.isnan(u_solve_batch).any():
-            return False
-
-        # now do it again, but with the gradients
         optimizer = torch.optim.Adam(self.parameters(), lr=0.0)
         for i in range(2):
             optimizer.zero_grad()
-            u_solve_batch = self.forward(u_solve_batch, z)
+            u_solve_batch = self.forward(z)
             loss = torch.mean(u_solve_batch**2)
             loss.backward()
             optimizer.step()
@@ -185,18 +184,17 @@ class SolutionOfPDENet(nn.Module):
         u_int = utils.newton_solve(f, u_int, **self.newton_kwaargs)
         return u_int
 
-    def forward(self, u_int_batch, z_batch):
+    def forward(self, z_batch):
         """
         Batched solution operation of `N(u, u_x, u_{xx} ; z) = 0`
 
         Args:
-            u_int_batch: Batch of initial guesses for the solution. `[n_batch, n_x-2]`
             z_batch: Batch of latent variables. `[n_batch, latent_dim]`. Does not vary spatially.
         Returns:
             u_int_batch: Batch of solved solutions. `[n_batch, n_x-2]`
         """
-
-        for i in range(u_int_batch.shape[0]):
+        u_int_batch = torch.zeros((z_batch.shape[0], len(self.x)-2), device=z_batch.device, dtype=z_batch.dtype)
+        for i in range(z_batch.shape[0]):
             u_int = u_int_batch[i]
             z = z_batch[i]
             u_int = self._single_forward(u_int, z)
